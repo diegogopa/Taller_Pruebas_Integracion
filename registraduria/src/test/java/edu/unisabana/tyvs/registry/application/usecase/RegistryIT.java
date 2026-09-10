@@ -15,16 +15,6 @@ import static org.junit.Assert.assertTrue;
 /**
  * PRUEBA DE INTEGRACION: el caso de uso {@link Registry} contra una base de
  * datos H2 real (no un mock). Verifica que la persistencia realmente funciona.
- *
- * Por que el nombre termina en IT y no en Test:
- * en este taller *Test.java son pruebas UNITARIAS (las ejecuta Surefire en
- * "mvn test") y *IT.java son de INTEGRACION o sistema (las ejecuta Failsafe en
- * "mvn verify"). Esta clase toca una base de datos, asi que no es unitaria.
- * Compare con {@link RegistryWithMockTest}, que prueba la misma clase sin BD.
- *
- * Cada prueba usa su propia base (regdb_usecase_it) y limpia en el @Before:
- * H2 con DB_CLOSE_DELAY=-1 sobrevive mientras viva la JVM, y las JVM se
- * reutilizan entre clases de prueba.
  */
 public class RegistryIT {
 
@@ -36,43 +26,71 @@ public class RegistryIT {
     @Before
     public void setup() throws Exception {
         RegistryRepository repository = new RegistryRepository(JDBC_URL);
-        repository.initSchema(); // Arrange: crear tabla
-        repository.deleteAll(); // Arrange: estado limpio para cada prueba
+        repository.initSchema();
+        repository.deleteAll();
 
         repo = repository;
-        registry = new Registry(repo); // Arrange: inyectar dependencia
+        registry = new Registry(repo);
     }
 
     @Test
     public void shouldRegisterValidPerson() throws Exception {
-        // Arrange
         Person p1 = new Person("Ana", 100, 30, Gender.FEMALE, true);
 
-        // Act
         RegisterResult result = registry.registerVoter(p1);
 
-        // Assert: el resultado Y el efecto real en la base de datos
         assertEquals(RegisterResult.VALID, result);
         assertTrue(repo.existsById(100));
     }
 
     @Test
     public void shouldPersistValidVoterAndRejectDuplicates() throws Exception {
-        // Arrange
         Person p1 = new Person("Ana", 100, 30, Gender.FEMALE, true);
         Person p2 = new Person("AnaDos", 100, 40, Gender.FEMALE, true);
 
-        // Act (primer registro)
         RegisterResult result1 = registry.registerVoter(p1);
 
-        // Assert primer registro
         assertEquals(RegisterResult.VALID, result1);
         assertTrue(repo.existsById(100));
 
-        // Act (segundo registro con el mismo id)
         RegisterResult result2 = registry.registerVoter(p2);
 
-        // Assert: la unicidad la garantiza la base de datos, no el mock
         assertEquals(RegisterResult.DUPLICATED, result2);
+    }
+
+    @Test
+    public void shouldRejectUnderagePerson() throws Exception {
+        Person p = new Person("Carlos", 101, 17, Gender.MALE, true);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.UNDERAGE, result);
+    }
+
+    @Test
+    public void shouldRejectInvalidAge() throws Exception {
+        Person p = new Person("Laura", 102, -1, Gender.FEMALE, true);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.INVALID_AGE, result);
+    }
+
+    @Test
+    public void shouldRejectDeadPerson() throws Exception {
+        Person p = new Person("Pedro", 103, 30, Gender.MALE, false);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.DEAD, result);
+    }
+
+    @Test
+    public void shouldRejectInvalidId() throws Exception {
+        Person p = new Person("Maria", 0, 30, Gender.FEMALE, true);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.INVALID, result);
     }
 }

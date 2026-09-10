@@ -78,4 +78,17 @@ class RegistraduriaProviderPactIT {
     void conVotante901() {
         registry.registerVoter(new Person("Luis", 901, 40, Gender.MALE, true));
     }
+
+    /**
+     * Estado para la interaccion "un registro de votante menor de edad".
+     *
+     * No requiere ningun votante previo en la base de datos: el rechazo por
+     * minoria de edad ocurre antes de que Registry consulte el repositorio.
+     * Aun asi se limpia la tabla para que la prueba no dependa del orden de
+     * ejecucion de las demas interacciones del pacto.
+     */
+    @State("no hay ningun votante registrado con id 902")
+    void sinVotante902() throws Exception {
+        repo.deleteAll();
+    }
 }

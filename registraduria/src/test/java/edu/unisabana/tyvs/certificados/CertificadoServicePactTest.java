@@ -116,4 +116,43 @@ class CertificadoServicePactTest {
         // Assert
         assertNull(certificado);
     }
+
+    /**
+     * Interaccion 3: un votante menor de edad responde UNDERAGE.
+     *
+     * A diferencia de las dos interacciones anteriores, esta no depende de
+     * ningun estado previo en la base de datos: la Registraduria rechaza a un
+     * menor de edad sin necesidad de consultar nada. Aun asi se declara un
+     * "given" descriptivo, para dejar explicito bajo que condicion el
+     * proveedor debe comportarse asi cuando verifique el pacto.
+     */
+    @Pact(consumer = "certificados", provider = "registraduria")
+    public RequestResponsePact votanteMenorDeEdad(PactDslWithProvider builder) {
+        return builder
+                .given("no hay ningun votante registrado con id 902")
+                .uponReceiving("un registro de votante menor de edad")
+                .path("/register")
+                .method("POST")
+                .headers(JSON)
+                .body("{\"name\":\"Sara\",\"id\":902,\"age\":17,\"gender\":\"FEMALE\",\"alive\":true}")
+                .willRespondWith()
+                .status(200)
+                .body("UNDERAGE")
+                .toPact();
+    }
+
+    @Test
+    @PactTestFor(pactMethod = "votanteMenorDeEdad")
+    @DisplayName("No emite certificado cuando el votante es menor de edad")
+    void noEmiteCertificadoCuandoElVotanteEsMenor(MockServer mockServer) {
+        // Arrange
+        CertificadoService servicio =
+                new CertificadoService(new RegistraduriaClient(mockServer.getUrl()));
+
+        // Act
+        String certificado = servicio.emitirCertificado(902, "Sara", 17, "FEMALE", true);
+
+        // Assert
+        assertNull(certificado);
+    }
 }

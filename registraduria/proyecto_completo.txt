@@ -1,0 +1,1845 @@
+﻿
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\certificados\CertificadoService.java =====
+
+package edu.unisabana.tyvs.certificados;
+
+/**
+ * Caso de uso del SERVICIO DE CERTIFICADOS: emitir el certificado electoral
+ * de una persona, pero solo si la Registraduria la acepto como votante valida.
+ *
+ * Este servicio no sabe nada de bases de datos ni de las reglas de la
+ * Registraduria: solo conoce su CONTRATO HTTP. Si la Registraduria cambiara
+ * ese contrato (por ejemplo, devolviendo {"resultado":"VALID"} en vez de texto
+ * plano), este servicio se romperia en produccion sin que ninguna prueba del
+ * proveedor se entere. Eso es exactamente lo que el contract testing previene.
+ */
+public class CertificadoService {
+
+    private final RegistraduriaClient registraduria;
+
+    public CertificadoService(RegistraduriaClient registraduria) {
+        this.registraduria = registraduria;
+    }
+
+    /**
+     * @return el numero de certificado si la persona es votante valida,
+     *         o null si la Registraduria la rechazo.
+     */
+    public String emitirCertificado(int id, String nombre, int edad, String genero, boolean vivo) {
+        String resultado = registraduria.registrarVotante(id, nombre, edad, genero, vivo);
+
+        if (!"VALID".equals(resultado)) {
+            return null;
+        }
+        return "CERT-" + id;
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\certificados\RegistraduriaClient.java =====
+
+package edu.unisabana.tyvs.certificados;
+
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.client.RestTemplate;
+
+/**
+ * Cliente HTTP del servicio de Registraduria, visto desde el SERVICIO DE
+ * CERTIFICADOS.
+ *
+ * Este es el CONSUMIDOR del contrato. En un proyecto real viviria en su propio
+ * repositorio y su propio despliegue; aqui convive con el proveedor solo para
+ * que el taller quepa en un proyecto.
+ *
+ * Lo unico que le importa a este consumidor del proveedor es:
+ *   - que exista POST /register
+ *   - que acepte un JSON con name, id, age, gender, alive
+ *   - que responda 200 con el texto del resultado
+ *
+ * Eso, y nada mas que eso, es el contrato.
+ */
+public class RegistraduriaClient {
+
+    private final String baseUrl;
+    private final RestTemplate rest;
+
+    public RegistraduriaClient(String baseUrl) {
+        this(baseUrl, new RestTemplate());
+    }
+
+    public RegistraduriaClient(String baseUrl, RestTemplate rest) {
+        this.baseUrl = baseUrl;
+        this.rest = rest;
+    }
+
+    /**
+     * Registra a un votante y devuelve el resultado tal como lo reporta la
+     * Registraduria ("VALID", "DUPLICATED", "UNDERAGE", "INVALID_AGE", "DEAD", "INVALID").
+     */
+    public String registrarVotante(int id, String nombre, int edad, String genero, boolean vivo) {
+        String json = String.format(
+                "{\"name\":\"%s\",\"id\":%d,\"age\":%d,\"gender\":\"%s\",\"alive\":%b}",
+                nombre, id, edad, genero, vivo);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+
+        ResponseEntity<String> resp =
+                rest.postForEntity(baseUrl + "/register", new HttpEntity<>(json, headers), String.class);
+
+        return resp.getBody();
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\application\port\out\RegistryRepositoryPort.java =====
+
+package edu.unisabana.tyvs.registry.application.port.out;
+
+import edu.unisabana.tyvs.registry.infrastructure.persistence.RegistryRecord;
+
+import java.util.Optional;
+
+/**
+ * Puerto de salida para persistencia de registros.
+ * Define las operaciones necesarias para el caso de uso Registry.
+ * No debe tener dependencias hacia JDBC u otras librerÃ­as de infraestructura.
+ */
+public interface RegistryRepositoryPort {
+
+    /** Crea la tabla/estructura inicial (solo Ãºtil en pruebas con H2). */
+    void initSchema() throws Exception;
+
+    /** Verifica si un registro existe por ID. */
+    boolean existsById(int id) throws Exception;
+
+    /** Persiste un nuevo registro en la base de datos. */
+    void save(int id, String name, int age, boolean isAlive) throws Exception;
+
+    /** Busca un registro por su ID. */
+    Optional<RegistryRecord> findById(int id) throws Exception;
+
+    /** Borra todos los registros (Ãºtil para limpiar entre pruebas). */
+    void deleteAll() throws Exception;
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\application\usecase\Registry.java =====
+
+package edu.unisabana.tyvs.registry.application.usecase;
+
+import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
+import edu.unisabana.tyvs.registry.domain.model.Person;
+import edu.unisabana.tyvs.registry.domain.model.RegisterResult;
+
+/**
+ * Caso de uso: registrar un votante.
+ *
+ * Depende del PUERTO (RegistryRepositoryPort), no de una implementacion
+ * concreta. Eso es lo que permite probarlo de dos formas distintas:
+ *
+ * - con un mock del puerto -> prueba UNITARIA (rapida, sin base de datos)
+ * - con RegistryRepository sobre H2 -> prueba de INTEGRACION (real, mas lenta)
+ */
+public class Registry {
+
+    /** Edad minima para votar. */
+    public static final int MIN_AGE = 18;
+
+    /** Edad maxima biologicamente posible; por encima, el dato es imposible. */
+    public static final int MAX_AGE = 120;
+
+    private final RegistryRepositoryPort repo;
+
+    public Registry(RegistryRepositoryPort repo) {
+        this.repo = repo;
+    }
+
+    public RegisterResult registerVoter(Person p) {
+        if (p == null)
+            return RegisterResult.INVALID;
+        if (p.getId() <= 0)
+            return RegisterResult.INVALID;
+        if (!p.isAlive())
+            return RegisterResult.DEAD;
+        // El orden importa: una edad imposible se descarta ANTES de preguntar
+        // si es menor de edad. Si se invirtiera, -1 caeria en la rama de
+        // UNDERAGE y el sistema le diria a esa persona que espere a cumplir
+        // anios, cuando lo que hay es un dato mal capturado.
+        if (p.getAge() < 0 || p.getAge() > MAX_AGE)
+            return RegisterResult.INVALID_AGE;
+        if (p.getAge() < MIN_AGE)
+            return RegisterResult.UNDERAGE;
+
+        try {
+            if (repo.existsById(p.getId()))
+                return RegisterResult.DUPLICATED;
+            repo.save(p.getId(), p.getName(), p.getAge(), p.isAlive());
+            return RegisterResult.VALID;
+        } catch (Exception e) {
+            // Traducimos el fallo de infraestructura a una excepcion de aplicacion.
+            // El detalle tecnico va en la causa, no en el mensaje que ve el cliente.
+            throw new RegistryPersistenceException("No se pudo registrar al votante", e);
+        }
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\application\usecase\RegistryPersistenceException.java =====
+
+package edu.unisabana.tyvs.registry.application.usecase;
+
+/**
+ * Fallo de infraestructura al persistir un registro.
+ *
+ * Existe para que el caso de uso no filtre SQLException hacia arriba: la capa
+ * de entrega decide como traducirla a HTTP sin tener que conocer JDBC.
+ */
+public class RegistryPersistenceException extends RuntimeException {
+
+    public RegistryPersistenceException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\config\RegistryConfig.java =====
+
+package edu.unisabana.tyvs.registry.config;
+
+import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
+import edu.unisabana.tyvs.registry.application.usecase.Registry;
+import edu.unisabana.tyvs.registry.infrastructure.persistence.RegistryRepository;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * Cableado de la aplicacion (composition root).
+ *
+ * El dominio y el caso de uso no conocen Spring: es esta clase la que decide
+ * que implementacion concreta del puerto se inyecta. Por eso Registry se puede
+ * probar unitariamente con un mock sin levantar el contexto.
+ *
+ * La URL JDBC se lee de una propiedad para que cada prueba de integracion pueda
+ * usar su propia base de datos y no contaminar a las demas.
+ */
+@Configuration
+public class RegistryConfig {
+
+    @Bean
+    public RegistryRepositoryPort registryRepositoryPort(
+            @Value("${registry.jdbc-url:jdbc:h2:mem:regdb;DB_CLOSE_DELAY=-1}") String jdbcUrl)
+            throws Exception {
+        RegistryRepository repo = new RegistryRepository(jdbcUrl);
+        repo.initSchema();
+        return repo;
+    }
+
+    @Bean
+    public Registry registry(RegistryRepositoryPort port) {
+        return new Registry(port);
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\delivery\rest\RegistryController.java =====
+
+// src/main/java/edu/unisabana/tyvs/registry/delivery/rest/RegistryController.java
+package edu.unisabana.tyvs.registry.delivery.rest;
+
+import edu.unisabana.tyvs.registry.application.usecase.Registry;
+import edu.unisabana.tyvs.registry.domain.model.Gender;
+import edu.unisabana.tyvs.registry.domain.model.Person;
+import edu.unisabana.tyvs.registry.domain.model.RegisterResult;
+import edu.unisabana.tyvs.registry.domain.model.rq.PersonDTO;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/register")
+public class RegistryController {
+
+    private final Registry registry;
+
+    // Constructor explÃ­cito para inyecciÃ³n por constructor
+    public RegistryController(Registry registry) {
+        this.registry = registry;
+    }
+
+    @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_PLAIN_VALUE)
+    public String register(@RequestBody PersonDTO dto) {
+        Person p = new Person(dto.getName(), dto.getId(), dto.getAge(),
+                Gender.valueOf(dto.getGender()), dto.isAlive());
+        RegisterResult r = registry.registerVoter(p);   
+        return r.name();
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\delivery\rest\RegistryExceptionHandler.java =====
+
+package edu.unisabana.tyvs.registry.delivery.rest;
+
+import edu.unisabana.tyvs.registry.application.usecase.RegistryPersistenceException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+/**
+ * Traduce excepciones a codigos HTTP.
+ *
+ * Sin esta clase, un genero invalido como "X" produce un IllegalArgumentException
+ * dentro de Gender.valueOf() y Spring responde 500 Internal Server Error. Eso es
+ * incorrecto: 5xx significa "el servidor fallo", cuando en realidad el cliente
+ * envio datos malos. La respuesta correcta es 400 Bad Request.
+ *
+ * Este era el Defecto 05 de defectos.md.
+ */
+@RestControllerAdvice
+public class RegistryExceptionHandler {
+
+    /** Genero fuera del enum, o cualquier argumento invalido del cliente. */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<String> handleInvalidArgument(IllegalArgumentException ex) {
+        return ResponseEntity.badRequest().body("INVALID_INPUT");
+    }
+
+    /** JSON mal formado o con tipos que no encajan en el DTO. */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<String> handleMalformedJson(HttpMessageNotReadableException ex) {
+        return ResponseEntity.badRequest().body("MALFORMED_JSON");
+    }
+
+    /** Fallo real de infraestructura: aqui si corresponde un 5xx. */
+    @ExceptionHandler(RegistryPersistenceException.class)
+    public ResponseEntity<String> handlePersistence(RegistryPersistenceException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body("PERSISTENCE_ERROR");
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\domain\model\rq\PersonDTO.java =====
+
+package edu.unisabana.tyvs.registry.domain.model.rq;
+
+public class PersonDTO {
+    private String name;
+    private int id;
+    private int age;
+    private String gender;
+    private boolean alive;
+
+    public PersonDTO() {
+    }
+
+    public PersonDTO(String name, int id, int age, String gender, boolean alive) {
+        this.name = name;
+        this.id = id;
+        this.age = age;
+        this.gender = gender;
+        this.alive = alive;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public int getAge() {
+        return age;
+    }
+
+    public String getGender() {
+        return gender;
+    }
+
+    public boolean isAlive() {
+        return alive;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public void setAge(int age) {
+        this.age = age;
+    }
+
+    public void setGender(String gender) {
+        this.gender = gender;
+    }
+
+    public void setAlive(boolean alive) {
+        this.alive = alive;
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\domain\model\Gender.java =====
+
+package edu.unisabana.tyvs.registry.domain.model;
+
+public enum Gender {
+    MALE, FEMALE, UNIDENTIFIED
+}
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\domain\model\Person.java =====
+
+package edu.unisabana.tyvs.registry.domain.model;
+
+public class Person {
+    private final String name;
+    private final int id;
+    private final int age;
+    private final Gender gender;
+    private final boolean alive;
+
+    public Person(String name, int id, int age, Gender gender, boolean alive) {
+        this.name = name;
+        this.id = id;
+        this.age = age;
+        this.gender = gender;
+        this.alive = alive;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public int getAge() {
+        return age;
+    }
+
+    public Gender getGender() {
+        return gender;
+    }
+
+    public boolean isAlive() {
+        return alive;
+    }
+}
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\domain\model\RegisterResult.java =====
+
+package edu.unisabana.tyvs.registry.domain.model;
+
+/**
+ * Resultado posible de un intento de registro de votante.
+ *
+ * Cada constante corresponde a una clase de equivalencia del dominio. El
+ * conjunto es EL MISMO que el del taller de pruebas unitarias: los dos
+ * talleres describen la misma Registraduria, y una regla no puede cambiar
+ * segun el taller desde el que se mire.
+ */
+public enum RegisterResult {
+    /** Persona viva, mayor de edad, id valido y no registrada previamente. */
+    VALID,
+    /** Persona nula o con id invalido (id <= 0). */
+    INVALID,
+    /** Edad dentro del rango 0..17. */
+    UNDERAGE,
+    /** La persona no esta viva. */
+    DEAD,
+    /** El id ya fue registrado antes. */
+    DUPLICATED,
+    /**
+     * Edad fuera del rango biologicamente posible (< 0 o > 120).
+     *
+     * Es una clase de equivalencia distinta de UNDERAGE, y la diferencia no es
+     * cosmetica: una edad de 17 es un dato CORRECTO de una persona que aun no
+     * puede votar, mientras que una de -1 es un dato IMPOSIBLE. Lo primero se
+     * resuelve esperando; lo segundo, corrigiendo el registro. Devolver
+     * UNDERAGE para -1 le diria a esa persona que espere a cumplir anios.
+     */
+    INVALID_AGE
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\infrastructure\persistence\RegistryRecord.java =====
+
+package edu.unisabana.tyvs.registry.infrastructure.persistence;
+
+public class RegistryRecord {
+    private final int id;
+    private final String name;
+    private final int age;
+    private final boolean isAlive;
+
+    public RegistryRecord(int id, String name, int age, boolean isAlive) {
+        this.id = id;
+        this.name = name;
+        this.age = age;
+        this.isAlive = isAlive;
+    }
+
+    public int getId() {
+        return id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public int getAge() {
+        return age;
+    }
+
+    public boolean isAlive() {
+        return isAlive;
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\infrastructure\persistence\RegistryRepository.java =====
+
+package edu.unisabana.tyvs.registry.infrastructure.persistence;
+
+import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
+import java.sql.*;
+import java.util.Optional;
+
+public class RegistryRepository implements RegistryRepositoryPort {
+    private final String jdbcUrl;
+    private final String username;
+    private final String password;
+
+    public RegistryRepository(String jdbcUrl) {
+        this(jdbcUrl, "", "");
+    }
+
+    public RegistryRepository(String jdbcUrl, String username, String password) {
+        this.jdbcUrl = jdbcUrl;
+        this.username = username;
+        this.password = password;
+    }
+
+    private Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(jdbcUrl, username, password);
+    }
+
+    @Override
+    public void initSchema() throws Exception {
+        final String ddl = "CREATE TABLE IF NOT EXISTS registry(" +
+                " id INT PRIMARY KEY," +
+                " name VARCHAR(100) NOT NULL," +
+                " age INT NOT NULL," +
+                " is_alive BOOLEAN NOT NULL" +
+                ");";
+        try (Connection con = getConnection(); Statement st = con.createStatement()) {
+            st.execute(ddl);
+        }
+    }
+
+    @Override
+    public boolean existsById(int id) throws Exception {
+        final String sql = "SELECT 1 FROM registry WHERE id = ?";
+        try (Connection con = getConnection(); PreparedStatement ps = con.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    @Override
+    public void save(int id, String name, int age, boolean isAlive) throws Exception {
+        final String sql = "INSERT INTO registry(id, name, age, is_alive) VALUES(?, ?, ?, ?)";
+        try (Connection con = getConnection(); PreparedStatement ps = con.prepareStatement(sql)) {
+            boolean prev = con.getAutoCommit();
+            con.setAutoCommit(false);
+            try {
+                ps.setInt(1, id);
+                ps.setString(2, name);
+                ps.setInt(3, age);
+                ps.setBoolean(4, isAlive);
+                ps.executeUpdate();
+                con.commit();
+            } catch (SQLException e) {
+                con.rollback();
+                throw e;
+            } finally {
+                con.setAutoCommit(prev);
+            }
+        }
+    }
+
+    @Override
+    public Optional<RegistryRecord> findById(int id) throws Exception {
+        final String sql = "SELECT id, name, age, is_alive FROM registry WHERE id = ?";
+        try (Connection con = getConnection(); PreparedStatement ps = con.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next())
+                    return Optional.empty();
+                return Optional.of(new RegistryRecord(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getInt("age"),
+                        rs.getBoolean("is_alive")));
+            }
+        }
+    }
+
+    @Override
+    public void deleteAll() throws Exception {
+        try (Connection con = getConnection(); Statement st = con.createStatement()) {
+            st.executeUpdate("DELETE FROM registry");
+        }
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\main\java\edu\unisabana\tyvs\registry\RegistryApplication.java =====
+
+// src/main/java/edu/unisabana/tyvs/RegistryApplication.java
+package edu.unisabana.tyvs.registry;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class RegistryApplication {
+  public static void main(String[] args) {
+    SpringApplication.run(RegistryApplication.class, args);
+  }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\test\java\edu\unisabana\tyvs\certificados\CertificadoServicePactTest.java =====
+
+package edu.unisabana.tyvs.certificados;
+
+import au.com.dius.pact.consumer.MockServer;
+import au.com.dius.pact.consumer.dsl.PactDslWithProvider;
+import au.com.dius.pact.consumer.junit5.PactConsumerTestExt;
+import au.com.dius.pact.consumer.junit5.PactTestFor;
+import au.com.dius.pact.core.model.PactSpecVersion;
+import au.com.dius.pact.core.model.RequestResponsePact;
+import au.com.dius.pact.core.model.annotations.Pact;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
+/**
+ * LADO CONSUMIDOR del contract testing.
+ *
+ * El problema que resuelve: en el modulo de mocks aprendimos a simular al
+ * colaborador para que la prueba sea rapida. Pero un mock siempre responde lo
+ * que nosotros le dijimos que respondiera. Si el proveedor real cambia su
+ * contrato, el mock sigue verde y el fallo aparece en produccion.
+ *
+ * La prueba de sistema (RegistryControllerIT) tampoco lo cubre: verifica al
+ * proveedor contra si mismo, sin saber que espera el consumidor.
+ *
+ * Pact cierra ese hueco. Aqui el CONSUMIDOR declara que espera, la prueba corre
+ * contra un servidor simulado que se comporta segun esa declaracion, y como
+ * subproducto se genera un archivo de PACTO en target/pacts/. Luego el
+ * proveedor verifica, en su propio pipeline, que sigue cumpliendolo.
+ *
+ * Nunca hace falta levantar los dos servicios a la vez.
+ */
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "registraduria", port = "0", pactVersion = PactSpecVersion.V3)
+@DisplayName("Contrato: certificados -> registraduria")
+class CertificadoServicePactTest {
+
+    private static final Map<String, String> JSON =
+            Map.of("Content-Type", "application/json");
+
+    /**
+     * Interaccion 1: una persona valida se registra y responde VALID.
+     *
+     * Note que el pacto describe la FORMA del intercambio, no la logica del
+     * proveedor. Al consumidor no le importa por que la Registraduria considera
+     * valida a esta persona; le importa recibir 200 y el texto "VALID".
+     */
+    @Pact(consumer = "certificados", provider = "registraduria")
+    public RequestResponsePact votanteValido(PactDslWithProvider builder) {
+        return builder
+                .given("no hay ningun votante registrado con id 900")
+                .uponReceiving("un registro de votante valido")
+                .path("/register")
+                .method("POST")
+                .headers(JSON)
+                .body("{\"name\":\"Ana\",\"id\":900,\"age\":30,\"gender\":\"FEMALE\",\"alive\":true}")
+                .willRespondWith()
+                .status(200)
+                .body("VALID")
+                .toPact();
+    }
+
+    @Test
+    @PactTestFor(pactMethod = "votanteValido")
+    @DisplayName("Emite certificado cuando la Registraduria responde VALID")
+    void emiteCertificadoCuandoElVotanteEsValido(MockServer mockServer) {
+        // Arrange: el cliente apunta al servidor simulado por Pact
+        CertificadoService servicio =
+                new CertificadoService(new RegistraduriaClient(mockServer.getUrl()));
+
+        // Act
+        String certificado = servicio.emitirCertificado(900, "Ana", 30, "FEMALE", true);
+
+        // Assert
+        assertEquals("CERT-900", certificado);
+    }
+
+    /**
+     * Interaccion 2: un votante ya registrado responde DUPLICATED.
+     *
+     * El "given" describe el ESTADO del proveedor necesario para que la
+     * respuesta sea la esperada. El proveedor tendra que saber montar ese
+     * estado cuando verifique el pacto.
+     */
+    @Pact(consumer = "certificados", provider = "registraduria")
+    public RequestResponsePact votanteDuplicado(PactDslWithProvider builder) {
+        return builder
+                .given("ya existe un votante registrado con id 901")
+                .uponReceiving("un registro de votante repetido")
+                .path("/register")
+                .method("POST")
+                .headers(JSON)
+                .body("{\"name\":\"Luis\",\"id\":901,\"age\":40,\"gender\":\"MALE\",\"alive\":true}")
+                .willRespondWith()
+                .status(200)
+                .body("DUPLICATED")
+                .toPact();
+    }
+
+    @Test
+    @PactTestFor(pactMethod = "votanteDuplicado")
+    @DisplayName("No emite certificado cuando la Registraduria responde DUPLICATED")
+    void noEmiteCertificadoCuandoElVotanteEstaDuplicado(MockServer mockServer) {
+        // Arrange
+        CertificadoService servicio =
+                new CertificadoService(new RegistraduriaClient(mockServer.getUrl()));
+
+        // Act
+        String certificado = servicio.emitirCertificado(901, "Luis", 40, "MALE", true);
+
+        // Assert
+        assertNull(certificado);
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\test\java\edu\unisabana\tyvs\registry\application\usecase\RegistryIT.java =====
+
+package edu.unisabana.tyvs.registry.application.usecase;
+
+import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
+import edu.unisabana.tyvs.registry.domain.model.Gender;
+import edu.unisabana.tyvs.registry.domain.model.Person;
+import edu.unisabana.tyvs.registry.domain.model.RegisterResult;
+import edu.unisabana.tyvs.registry.infrastructure.persistence.RegistryRepository;
+
+import org.junit.Before;
+import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+/**
+ * PRUEBA DE INTEGRACION: el caso de uso {@link Registry} contra una base de
+ * datos H2 real (no un mock). Verifica que la persistencia realmente funciona.
+ */
+public class RegistryIT {
+
+    private static final String JDBC_URL = "jdbc:h2:mem:regdb_usecase_it;DB_CLOSE_DELAY=-1";
+
+    private RegistryRepositoryPort repo;
+    private Registry registry;
+
+    @Before
+    public void setup() throws Exception {
+        RegistryRepository repository = new RegistryRepository(JDBC_URL);
+        repository.initSchema();
+        repository.deleteAll();
+
+        repo = repository;
+        registry = new Registry(repo);
+    }
+
+    @Test
+    public void shouldRegisterValidPerson() throws Exception {
+        Person p1 = new Person("Ana", 100, 30, Gender.FEMALE, true);
+
+        RegisterResult result = registry.registerVoter(p1);
+
+        assertEquals(RegisterResult.VALID, result);
+        assertTrue(repo.existsById(100));
+    }
+
+    @Test
+    public void shouldPersistValidVoterAndRejectDuplicates() throws Exception {
+        Person p1 = new Person("Ana", 100, 30, Gender.FEMALE, true);
+        Person p2 = new Person("AnaDos", 100, 40, Gender.FEMALE, true);
+
+        RegisterResult result1 = registry.registerVoter(p1);
+
+        assertEquals(RegisterResult.VALID, result1);
+        assertTrue(repo.existsById(100));
+
+        RegisterResult result2 = registry.registerVoter(p2);
+
+        assertEquals(RegisterResult.DUPLICATED, result2);
+    }
+
+    @Test
+    public void shouldRejectUnderagePerson() throws Exception {
+        Person p = new Person("Carlos", 101, 17, Gender.MALE, true);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.UNDERAGE, result);
+    }
+
+    @Test
+    public void shouldRejectInvalidAge() throws Exception {
+        Person p = new Person("Laura", 102, -1, Gender.FEMALE, true);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.INVALID_AGE, result);
+    }
+
+    @Test
+    public void shouldRejectDeadPerson() throws Exception {
+        Person p = new Person("Pedro", 103, 30, Gender.MALE, false);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.DEAD, result);
+    }
+
+    @Test
+    public void shouldRejectInvalidId() throws Exception {
+        Person p = new Person("Maria", 0, 30, Gender.FEMALE, true);
+
+        RegisterResult result = registry.registerVoter(p);
+
+        assertEquals(RegisterResult.INVALID, result);
+    }
+}
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\test\java\edu\unisabana\tyvs\registry\application\usecase\RegistryWithMockTest.java =====
+
+package edu.unisabana.tyvs.registry.application.usecase;
+
+import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
+import edu.unisabana.tyvs.registry.domain.model.Gender;
+import edu.unisabana.tyvs.registry.domain.model.Person;
+import edu.unisabana.tyvs.registry.domain.model.RegisterResult;
+import org.junit.Before;
+import org.junit.Test;
+
+import static org.junit.Assert.*;
+import static org.mockito.Mockito.*;
+
+/**
+ * Clase de prueba unitaria para {@link Registry} utilizando un mock de {@link RegistryRepositoryPort}.
+ *
+ * <p>Estas pruebas ilustran cÃ³mo aislar el caso de uso del repositorio real,
+ * aplicando dobles de prueba (Mockito) para simular los escenarios.</p>
+ *
+ * <p><b>Formato AAA:</b></p>
+ * <ul>
+ *   <li><b>Arrange</b>: se preparan datos y comportamiento del mock.</li>
+ *   <li><b>Act</b>: se ejecuta el mÃ©todo bajo prueba.</li>
+ *   <li><b>Assert</b>: se verifican resultados y que no haya interacciones no deseadas.</li>
+ * </ul>
+ *
+ * <p><b>Beneficio:</b> este tipo de prueba es una <i>unitaria pura</i>,
+ * sin necesidad de levantar bases de datos ni infraestructura adicional.</p>
+ */
+public class RegistryWithMockTest {
+
+    /** Mock del puerto de persistencia. */
+    private RegistryRepositoryPort repo;
+
+    /** Caso de uso bajo prueba, instanciado con el mock. */
+    private Registry registry;
+
+    /**
+     * Configura el mock y el caso de uso antes de cada prueba.
+     *
+     * <p>Se crea un mock de {@link RegistryRepositoryPort} usando Mockito
+     * y se inyecta en la instancia de {@link Registry}.</p>
+     */
+    @Before
+    public void setUp() {
+        repo = mock(RegistryRepositoryPort.class);
+        registry = new Registry(repo);
+    }
+
+    /**
+     * Caso de prueba: detectar registros duplicados.
+     *
+     * <p><b>Escenario (BDD):</b></p>
+     * <ul>
+     *   <li><b>Given</b>: una persona con ID=7 y el repositorio ya indica que ese ID existe.</li>
+     *   <li><b>When</b>: se intenta registrar la persona.</li>
+     *   <li><b>Then</b>: el resultado debe ser {@link RegisterResult#DUPLICATED}
+     *       y no se debe invocar el mÃ©todo {@code save(...)} en el repositorio.</li>
+     * </ul>
+     *
+     * @throws Exception propagada en caso de error durante la ejecuciÃ³n.
+     */
+    @Test
+    public void shouldReturnDuplicatedWhenRepoSaysExists() throws Exception {
+        // Arrange: configurar mock y datos
+        when(repo.existsById(7)).thenReturn(true);
+        Person p = new Person("Ana", 7, 25, Gender.FEMALE, true);
+
+        // Act: ejecutar mÃ©todo bajo prueba
+        RegisterResult result = registry.registerVoter(p);
+
+        // Assert: verificar resultado y comportamiento esperado del mock
+        assertEquals(RegisterResult.DUPLICATED, result);
+        verify(repo, never()).save(anyInt(), anyString(), anyInt(), anyBoolean());
+    }
+
+    /**
+     * Caso de prueba: persona valida que si se persiste.
+     *
+     * <p><b>Given</b> el repositorio dice que el ID no existe;
+     * <b>When</b> se registra la persona;
+     * <b>Then</b> el resultado es {@link RegisterResult#VALID} y se invoca
+     * {@code save(...)} exactamente una vez con esos datos.</p>
+     *
+     * <p>Note la diferencia con la aserciÃ³n de estado: aqui no verificamos que
+     * el dato quedo guardado (no hay base de datos), sino que el caso de uso
+     * <i>colaboro</i> correctamente con su puerto. Eso es una aserciÃ³n de
+     * comportamiento, y es lo unico que un mock puede darnos.</p>
+     */
+    @Test
+    public void shouldSaveWhenPersonIsValid() throws Exception {
+        // Arrange
+        when(repo.existsById(8)).thenReturn(false);
+        Person p = new Person("Luis", 8, 30, Gender.MALE, true);
+
+        // Act
+        RegisterResult result = registry.registerVoter(p);
+
+        // Assert
+        assertEquals(RegisterResult.VALID, result);
+        verify(repo, times(1)).save(8, "Luis", 30, true);
+    }
+
+    /**
+     * Caso de prueba: fallo de infraestructura.
+     *
+     * <p><b>Given</b> el repositorio lanza una {@link java.sql.SQLException};
+     * <b>When</b> se intenta registrar; <b>Then</b> el caso de uso la traduce a
+     * {@link RegistryPersistenceException} en vez de dejarla escapar.</p>
+     *
+     * <p>Este escenario es practicamente imposible de provocar con una base de
+     * datos real: es el ejemplo canonico de para que sirve un mock.</p>
+     */
+    @Test
+    public void shouldWrapPersistenceFailure() throws Exception {
+        // Arrange: el puerto falla al consultar
+        when(repo.existsById(9)).thenThrow(new java.sql.SQLException("conexion perdida"));
+        Person p = new Person("Eva", 9, 30, Gender.FEMALE, true);
+
+        // Act + Assert
+        try {
+            registry.registerVoter(p);
+            fail("Se esperaba RegistryPersistenceException");
+        } catch (RegistryPersistenceException expected) {
+            assertEquals(java.sql.SQLException.class, expected.getCause().getClass());
+        }
+    }
+
+    /**
+     * Caso de prueba: reglas de dominio que ni siquiera tocan el repositorio.
+     *
+     * <p>Verificamos ademas que NO se consulta la base de datos: rechazar a un
+     * menor de edad no deberia costar una consulta.</p>
+     */
+    @Test
+    public void shouldRejectUnderageWithoutTouchingRepository() throws Exception {
+        // Arrange
+        Person menor = new Person("Sara", 10, 17, Gender.FEMALE, true);
+
+        // Act
+        RegisterResult result = registry.registerVoter(menor);
+
+        // Assert
+        assertEquals(RegisterResult.UNDERAGE, result);
+        verifyNoInteractions(repo);
+    }
+
+    /** Persona nula: validacion defensiva, sin tocar el repositorio. */
+    @Test
+    public void shouldReturnInvalidWhenPersonIsNull() {
+        assertEquals(RegisterResult.INVALID, registry.registerVoter(null));
+        verifyNoInteractions(repo);
+    }
+
+    /** Documento no positivo: entrada invalida. */
+    @Test
+    public void shouldReturnInvalidWhenIdIsNotPositive() {
+        Person p = new Person("Nadie", 0, 30, Gender.UNIDENTIFIED, true);
+
+        assertEquals(RegisterResult.INVALID, registry.registerVoter(p));
+        verifyNoInteractions(repo);
+    }
+
+    /** Persona no viva: se rechaza antes de evaluar la edad. */
+    @Test
+    public void shouldReturnDeadWhenPersonIsNotAlive() {
+        Person p = new Person("Pedro", 11, 50, Gender.MALE, false);
+
+        assertEquals(RegisterResult.DEAD, registry.registerVoter(p));
+        verifyNoInteractions(repo);
+    }
+
+    /**
+     * Edad negativa: dato IMPOSIBLE, no persona menor.
+     *
+     * <p>Es el caso que documenta el Defecto 01 de {@code defectos.md}. Antes
+     * devolvia {@link RegisterResult#UNDERAGE}, igual que una edad de 17, y esa
+     * confusion tiene consecuencias reales: a quien tiene 17 se le dice que
+     * espere; a quien aparece con -1 hay que corregirle el registro.</p>
+     */
+    @Test
+    public void shouldReturnInvalidAgeWhenAgeIsNegative() {
+        Person p = new Person("Imposible", 12, -1, Gender.UNIDENTIFIED, true);
+
+        assertEquals(RegisterResult.INVALID_AGE, registry.registerVoter(p));
+        verifyNoInteractions(repo);
+    }
+
+    /** Edad por encima del maximo biologico: tambien es un dato imposible. */
+    @Test
+    public void shouldReturnInvalidAgeWhenAgeExceedsMaximum() {
+        Person p = new Person("Matusalen", 13, Registry.MAX_AGE + 1, Gender.MALE, true);
+
+        assertEquals(RegisterResult.INVALID_AGE, registry.registerVoter(p));
+        verifyNoInteractions(repo);
+    }
+
+    /**
+     * VALOR LIMITE de la frontera entre UNDERAGE e INVALID_AGE.
+     *
+     * <p>La edad 0 es el borde exacto: un ano menos es imposible, y 0 es un
+     * dato correcto de un recien nacido que, evidentemente, no puede votar.
+     * Sin esta prueba, cambiar {@code < 0} por {@code <= 0} en el codigo no
+     * rompe nada, y esa mutacion sobrevive.</p>
+     */
+    @Test
+    public void shouldReturnUnderageWhenAgeIsZero() {
+        Person p = new Person("Recien nacida", 14, 0, Gender.FEMALE, true);
+
+        assertEquals(RegisterResult.UNDERAGE, registry.registerVoter(p));
+        verifyNoInteractions(repo);
+    }
+
+    /** VALOR LIMITE superior: la edad maxima exacta sigue siendo valida. */
+    @Test
+    public void shouldAcceptTheMaximumAge() throws Exception {
+        Person p = new Person("Centenaria", 15, Registry.MAX_AGE, Gender.FEMALE, true);
+        when(repo.existsById(15)).thenReturn(false);
+
+        assertEquals(RegisterResult.VALID, registry.registerVoter(p));
+        verify(repo).save(15, "Centenaria", Registry.MAX_AGE, true);
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\test\java\edu\unisabana\tyvs\registry\delivery\rest\RegistraduriaProviderPactIT.java =====
+
+package edu.unisabana.tyvs.registry.delivery.rest;
+
+import au.com.dius.pact.provider.junit5.HttpTestTarget;
+import au.com.dius.pact.provider.junit5.PactVerificationContext;
+import au.com.dius.pact.provider.junit5.PactVerificationInvocationContextProvider;
+import au.com.dius.pact.provider.junitsupport.Provider;
+import au.com.dius.pact.provider.junitsupport.State;
+import au.com.dius.pact.provider.junitsupport.loader.PactFolder;
+
+import edu.unisabana.tyvs.registry.application.port.out.RegistryRepositoryPort;
+import edu.unisabana.tyvs.registry.application.usecase.Registry;
+import edu.unisabana.tyvs.registry.domain.model.Gender;
+import edu.unisabana.tyvs.registry.domain.model.Person;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.test.context.TestPropertySource;
+
+/**
+ * LADO PROVEEDOR del contract testing.
+ *
+ * Levanta la Registraduria completa y reproduce, una por una, TODAS las
+ * interacciones que el consumidor declaro en target/pacts/. Si alguien cambia
+ * el endpoint, el formato del cuerpo o el codigo de respuesta, esta prueba
+ * falla en el pipeline del PROVEEDOR, antes de romper al consumidor en
+ * produccion.
+ *
+ * Lo valioso: el consumidor nunca se levanta. Solo se lee su pacto.
+ *
+ * Cada @State corresponde a un "given" del pacto y prepara el estado que esa
+ * interaccion necesita. Es responsabilidad del proveedor saber montar ese
+ * estado; el consumidor solo lo nombra.
+ *
+ * En un proyecto real el pacto no se leeria de una carpeta local sino de un
+ * Pact Broker, al que el consumidor publica desde su propio pipeline.
+ */
+@Provider("registraduria")
+@PactFolder("target/pacts")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestPropertySource(properties = "registry.jdbc-url=jdbc:h2:mem:regdb_pact;DB_CLOSE_DELAY=-1")
+class RegistraduriaProviderPactIT {
+
+    @LocalServerPort
+    private int puerto;
+
+    @Autowired
+    private RegistryRepositoryPort repo;
+
+    @Autowired
+    private Registry registry;
+
+    @BeforeEach
+    void apuntarAlServidor(PactVerificationContext context) throws Exception {
+        repo.deleteAll();
+        if (context != null) {
+            context.setTarget(new HttpTestTarget("localhost", puerto));
+        }
+    }
+
+    @TestTemplate
+    @ExtendWith(PactVerificationInvocationContextProvider.class)
+    void verificarPacto(PactVerificationContext context) {
+        context.verifyInteraction();
+    }
+
+    /** Estado para la interaccion "un registro de votante valido". */
+    @State("no hay ningun votante registrado con id 900")
+    void sinVotante900() throws Exception {
+        repo.deleteAll();
+    }
+
+    /** Estado para la interaccion "un registro de votante repetido". */
+    @State("ya existe un votante registrado con id 901")
+    void conVotante901() {
+        registry.registerVoter(new Person("Luis", 901, 40, Gender.MALE, true));
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\test\java\edu\unisabana\tyvs\registry\delivery\rest\RegistryControllerIT.java =====
+
+package edu.unisabana.tyvs.registry.delivery.rest;
+
+import static org.junit.Assert.assertEquals;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.junit4.SpringRunner;
+
+/**
+ * PRUEBA DE SISTEMA (caja negra): levanta la aplicacion COMPLETA en un puerto
+ * aleatorio y la ejercita por HTTP, igual que lo haria un cliente real.
+ *
+ * Puntos de diseno que conviene notar:
+ *
+ * 1. NO define beans propios. El cableado real vive en RegistryConfig; si la
+ *    prueba lo duplicara, estaria probando su propio cableado y no el de
+ *    produccion (ademas de romper el contexto por nombres de bean repetidos).
+ *
+ * 2. Usa su PROPIA base de datos (registry.jdbc-url) para no compartir estado
+ *    con las demas pruebas. H2 con DB_CLOSE_DELAY=-1 sobrevive mientras viva la
+ *    JVM, y Surefire/Failsafe reutilizan la JVM entre clases: sin un nombre
+ *    distinto, un id insertado aqui reaparece en otra prueba.
+ *
+ * 3. RANDOM_PORT evita el puerto fijo, que haria fallar la prueba si algo mas
+ *    esta escuchando en 8080.
+ */
+@RunWith(SpringRunner.class)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@TestPropertySource(properties = "registry.jdbc-url=jdbc:h2:mem:regdb_ctrl_it;DB_CLOSE_DELAY=-1")
+public class RegistryControllerIT {
+
+    @Autowired
+    private TestRestTemplate rest;
+
+    private ResponseEntity<String> register(String json) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return rest.postForEntity("/register", new HttpEntity<>(json, headers), String.class);
+    }
+
+    @Test
+    public void shouldRegisterValidPerson() {
+        // Arrange
+        String json = "{\"name\":\"Ana\",\"id\":100,\"age\":30,\"gender\":\"FEMALE\",\"alive\":true}";
+
+        // Act
+        ResponseEntity<String> resp = register(json);
+
+        // Assert: assertEquals, NO la palabra clave assert de Java.
+        // 'assert' solo se evalua con -ea; el Test Runner de VS Code no lo activa
+        // y la prueba pasaria SIEMPRE, incluso con la respuesta equivocada.
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertEquals("VALID", resp.getBody());
+    }
+
+    @Test
+    public void shouldReturnDuplicatedWhenIdAlreadyRegistered() {
+        // Arrange: el primer registro deja el id 101 ocupado
+        String json = "{\"name\":\"Luis\",\"id\":101,\"age\":40,\"gender\":\"MALE\",\"alive\":true}";
+        assertEquals("VALID", register(json).getBody());
+
+        // Act: el mismo id, otra persona
+        ResponseEntity<String> resp = register(
+                "{\"name\":\"Luisa\",\"id\":101,\"age\":35,\"gender\":\"FEMALE\",\"alive\":true}");
+
+        // Assert
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertEquals("DUPLICATED", resp.getBody());
+    }
+
+    @Test
+    public void shouldReturnUnderageWhenPersonIsMinor() {
+        ResponseEntity<String> resp = register(
+                "{\"name\":\"Sara\",\"id\":102,\"age\":17,\"gender\":\"FEMALE\",\"alive\":true}");
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertEquals("UNDERAGE", resp.getBody());
+    }
+
+    @Test
+    public void shouldReturnDeadWhenPersonIsNotAlive() {
+        ResponseEntity<String> resp = register(
+                "{\"name\":\"Pedro\",\"id\":103,\"age\":50,\"gender\":\"MALE\",\"alive\":false}");
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        assertEquals("DEAD", resp.getBody());
+    }
+
+    @Test
+    public void shouldReturnBadRequestWhenGenderIsNotValid() {
+        // 'X' no es un valor del enum Gender.
+        // Sin manejo de error esto seria un 500; el @RestControllerAdvice lo
+        // convierte en el 400 que corresponde a una entrada invalida del cliente.
+        ResponseEntity<String> resp = register(
+                "{\"name\":\"Eva\",\"id\":104,\"age\":30,\"gender\":\"X\",\"alive\":true}");
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\src\test\java\edu\unisabana\tyvs\registry\infrastructure\persistence\RegistryRepositoryPostgresIT.java =====
+
+package edu.unisabana.tyvs.registry.infrastructure.persistence;
+
+import edu.unisabana.tyvs.registry.application.usecase.Registry;
+import edu.unisabana.tyvs.registry.domain.model.Gender;
+import edu.unisabana.tyvs.registry.domain.model.Person;
+import edu.unisabana.tyvs.registry.domain.model.RegisterResult;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.DockerClientFactory;
+
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * PRUEBA DE INTEGRACION CONTRA UNA BASE DE DATOS REAL (Testcontainers).
+ *
+ * Por que existe esta clase si ya tenemos RegistryIT con H2:
+ *
+ * H2 en memoria es rapido y comodo, pero NO es PostgreSQL. Difiere en
+ * dialecto SQL, en tipos, en el manejo de mayusculas de los identificadores y
+ * en el comportamiento transaccional. Una prueba verde contra H2 puede
+ * ocultar un fallo que solo aparece en produccion. H2 no miente a proposito:
+ * simplemente es otra base de datos.
+ *
+ * Testcontainers levanta un PostgreSQL de verdad en Docker, corre las pruebas
+ * contra el y lo destruye al terminar. Mismo codigo de produccion, base de
+ * datos real, cero instalacion manual.
+ *
+ * El precio: necesita Docker corriendo y tarda segundos en vez de
+ * milisegundos. Por eso conviven las dos: H2 para el ciclo rapido durante el
+ * desarrollo, PostgreSQL para la verificacion antes de integrar.
+ *
+ * Si Docker no esta disponible la clase entera se SALTA en vez de fallar: un
+ * companero sin Docker no deberia ver el build en rojo por eso.
+ *
+ * OJO con COMO se hace ese salto. Un assumeTrue dentro de un @BeforeAll NO
+ * sirve: la extension @Testcontainers arranca los contenedores estaticos en su
+ * propio callback beforeAll, que se ejecuta ANTES, y el fallo ocurre al
+ * intentar levantar el contenedor. Hay que usar @EnabledIf, que JUnit evalua
+ * como condicion de ejecucion antes de invocar cualquier extension.
+ */
+@Testcontainers
+@EnabledIf("hayDocker")
+@DisplayName("RegistryRepository contra PostgreSQL real")
+class RegistryRepositoryPostgresIT {
+
+    @Container
+    private static final PostgreSQLContainer<?> POSTGRES =
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                    .withDatabaseName("registraduria")
+                    .withUsername("tyvs")
+                    .withPassword("tyvs");
+
+    private RegistryRepository repo;
+    private Registry registry;
+
+    /** Condicion de ejecucion: se evalua ANTES de que la extension arranque nada. */
+    static boolean hayDocker() {
+        try {
+            return DockerClientFactory.instance().isDockerAvailable();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    @BeforeEach
+    void setUp() throws Exception {
+        repo = new RegistryRepository(
+                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+        repo.initSchema();
+        repo.deleteAll();
+        registry = new Registry(repo);
+    }
+
+    @Test
+    @DisplayName("Persiste un votante valido y rechaza el duplicado")
+    void shouldPersistAndRejectDuplicate() throws Exception {
+        // Arrange
+        Person ana = new Person("Ana", 100, 30, Gender.FEMALE, true);
+        Person otra = new Person("AnaDos", 100, 40, Gender.FEMALE, true);
+
+        // Act + Assert
+        assertEquals(RegisterResult.VALID, registry.registerVoter(ana));
+        assertTrue(repo.existsById(100));
+        assertEquals(RegisterResult.DUPLICATED, registry.registerVoter(otra));
+    }
+
+    @Test
+    @DisplayName("Los datos se leen igual que se escribieron")
+    void shouldRoundTripRecord() throws Exception {
+        // Arrange
+        registry.registerVoter(new Person("Luis", 200, 45, Gender.MALE, true));
+
+        // Act
+        RegistryRecord guardado = repo.findById(200).orElseThrow();
+
+        // Assert
+        assertEquals(200, guardado.getId());
+        assertEquals("Luis", guardado.getName());
+        assertEquals(45, guardado.getAge());
+        assertTrue(guardado.isAlive());
+    }
+
+    /**
+     * La columna name es VARCHAR(100); insertamos 150 caracteres.
+     *
+     * Nota honesta: aqui H2 2.x se comporta IGUAL que PostgreSQL (ambos
+     * rechazan el valor). Lo verificamos midiendo, no suponiendo. Se conserva
+     * la prueba porque el limite de longitud si es una regla que vale la pena
+     * fijar, pero no sirve como ejemplo de divergencia entre motores.
+     */
+    @Test
+    @DisplayName("PostgreSQL rechaza un nombre mas largo que la columna")
+    void shouldRejectOversizedName() {
+        // Arrange: 150 caracteres en una columna VARCHAR(100)
+        String nombreLargo = "A".repeat(150);
+        Person p = new Person(nombreLargo, 300, 30, Gender.UNIDENTIFIED, true);
+
+        // Act + Assert: el caso de uso envuelve el fallo de infraestructura
+        assertThrows(RuntimeException.class, () -> registry.registerVoter(p));
+    }
+
+    /**
+     * ESTA es la prueba que justifica todo el montaje: una divergencia REAL
+     * entre H2 y PostgreSQL, comprobada ejecutando la misma consulta en ambos.
+     *
+     * El estandar SQL dice que los identificadores sin comillas se pliegan a
+     * una caja, pero no dice a cual. Cada motor eligio distinto:
+     *
+     *   - H2 los pliega a MAYUSCULAS  -> la columna se llama NAME
+     *   - PostgreSQL los pliega a minusculas -> la columna se llama name
+     *
+     * Un identificador ENTRECOMILLADO, en cambio, se toma literal. Por eso
+     * SELECT "name" resuelve en PostgreSQL y falla en H2 con
+     * "Columna \"name\" no encontrada", pese a que el CREATE TABLE fue
+     * identico en los dos.
+     *
+     * Consecuencia para el taller: el mismo SQL NO es portable. Una consulta
+     * validada contra H2 puede romperse en produccion, y al reves. Eso es
+     * exactamente lo que Testcontainers evita.
+     */
+    @Test
+    @DisplayName("PostgreSQL resuelve un identificador entrecomillado en minusculas (H2 no)")
+    void shouldResolveQuotedLowercaseIdentifier() throws Exception {
+        // Arrange
+        registry.registerVoter(new Person("Ana", 400, 30, Gender.FEMALE, true));
+
+        // Act: identificador entrecomillado en minusculas
+        try (Connection con = DriverManager.getConnection(
+                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
+                Statement st = con.createStatement();
+                ResultSet rs = st.executeQuery("SELECT \"name\" FROM registry WHERE id = 400")) {
+
+            // Assert: en PostgreSQL funciona. La MISMA consulta contra H2 lanza
+            // "Columna \"name\" no encontrada".
+            assertTrue(rs.next());
+            assertEquals("Ana", rs.getString(1));
+        }
+    }
+
+    /**
+     * Comprobacion directa de que estamos hablando con PostgreSQL y no con H2.
+     * Util como diagnostico cuando una prueba se comporta distinto de lo esperado.
+     */
+    @Test
+    @DisplayName("El motor realmente es PostgreSQL")
+    void shouldBeRunningOnPostgres() throws SQLException {
+        try (Connection con = DriverManager.getConnection(
+                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())) {
+
+            assertEquals("PostgreSQL", con.getMetaData().getDatabaseProductName());
+        }
+    }
+}
+
+
+
+===== C:\Users\digom\ArquiSoft\TYVS-Taller_Pruebas_Integracion\registraduria\pom.xml =====
+
+<?xml version="1.0" encoding="UTF-8"?>
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>edu.unisabana.tyvs</groupId>
+    <artifactId>registraduria</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <name>registraduria</name>
+    <description>Taller de Pruebas de Integracion - Testing y Validacion de Software</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- El proyecto esta desarrollado para Java 17 -->
+        <maven.compiler.release>17</maven.compiler.release>
+
+        <!-- Spring Boot -->
+        <spring-boot.version>2.7.18</spring-boot.version>
+
+        <!-- Compatible con Docker Engine 29 -->
+        <testcontainers.version>1.21.4</testcontainers.version>
+
+        <!-- Compatible con Java 26 -->
+        <jacoco.version>0.8.15</jacoco.version>
+
+        <!-- Pact -->
+        <pact.version>4.6.14</pact.version>
+    </properties>
+
+
+    <!-- ============================================================= -->
+    <!-- DEPENDENCIAS                                                   -->
+    <!-- ============================================================= -->
+
+    <dependencies>
+
+        <!-- ========================================================= -->
+        <!-- JUNIT 4 SOBRE JUNIT PLATFORM                              -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- MOCKITO                                                     -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.12.0</version>
+            <scope>test</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- SPRING WEB                                                  -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- H2                                                          -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>runtime</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- TESTCONTAINERS + POSTGRESQL                                -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- PACT                                                        -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>au.com.dius.pact.consumer</groupId>
+            <artifactId>junit5</artifactId>
+            <version>${pact.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>au.com.dius.pact.provider</groupId>
+            <artifactId>junit5spring</artifactId>
+            <version>${pact.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+    </dependencies>
+
+
+    <!-- ============================================================= -->
+    <!-- BUILD                                                         -->
+    <!-- ============================================================= -->
+
+    <build>
+
+        <plugins>
+
+            <!-- ===================================================== -->
+            <!-- SUREFIRE                                                -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- FAILSAFE                                                 -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.2.5</version>
+
+                <configuration>
+                    <classesDirectory>
+                        ${project.build.outputDirectory}
+                    </classesDirectory>
+                </configuration>
+
+                <executions>
+                    <execution>
+
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+
+                        <configuration>
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                        </configuration>
+
+                    </execution>
+                </executions>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- SPRING BOOT                                             -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- JACOCO                                                   -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+
+                <executions>
+
+                    <!-- ================================================= -->
+                    <!-- 1. Preparar agente para pruebas normales           -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+
+
+                    <!-- ================================================= -->
+                    <!-- 2. Preparar agente para pruebas de integraciÃ³n     -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>prepare-agent-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                    </execution>
+
+
+                    <!-- ================================================= -->
+                    <!-- 3. Combinar jacoco.exec y jacoco-it.exec           -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>merge-results</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>merge</goal>
+                        </goals>
+
+                        <configuration>
+
+                            <fileSets>
+                                <fileSet>
+                                    <directory>
+                                        ${project.build.directory}
+                                    </directory>
+
+                                    <includes>
+                                        <include>jacoco.exec</include>
+                                        <include>jacoco-it.exec</include>
+                                    </includes>
+                                </fileSet>
+                            </fileSets>
+
+                            <destFile>
+                                ${project.build.directory}/jacoco-merged.exec
+                            </destFile>
+
+                        </configuration>
+                    </execution>
+
+
+                    <!-- ================================================= -->
+                    <!-- 4. Generar reporte FINAL combinado                 -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>report-combined</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+
+                        <configuration>
+
+                            <dataFile>
+                                ${project.build.directory}/jacoco-merged.exec
+                            </dataFile>
+
+                            <outputDirectory>
+                                ${project.build.directory}/site/jacoco
+                            </outputDirectory>
+
+                        </configuration>
+                    </execution>
+
+                </executions>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- COMPILADOR                                               -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+
+                <configuration>
+                    <release>17</release>
+                </configuration>
+            </plugin>
+
+        </plugins>
+
+    </build>
+
+
+    <!-- ============================================================= -->
+    <!-- SPRING BOOT DEPENDENCY MANAGEMENT                             -->
+    <!-- ============================================================= -->
+
+    <dependencyManagement>
+
+        <dependencies>
+
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+        </dependencies>
+
+    </dependencyManagement>
+
+</project>

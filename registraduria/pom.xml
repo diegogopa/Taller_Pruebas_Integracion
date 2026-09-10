@@ -1,231 +1,361 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
 
-  <groupId>edu.unisabana.tyvs</groupId>
-  <artifactId>registraduria</artifactId>
-  <version>1.0-SNAPSHOT</version>
+    <modelVersion>4.0.0</modelVersion>
 
-  <name>registraduria</name>
-  <description>Taller de Pruebas de Integracion - Testing y Validacion de Software</description>
+    <groupId>edu.unisabana.tyvs</groupId>
+    <artifactId>registraduria</artifactId>
+    <version>1.0-SNAPSHOT</version>
 
-  <properties>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <maven.compiler.release>17</maven.compiler.release>
-    <spring-boot.version>2.7.18</spring-boot.version>
-    <testcontainers.version>1.19.8</testcontainers.version>
-    <pact.version>4.6.14</pact.version>
-  </properties>
+    <name>registraduria</name>
+    <description>Taller de Pruebas de Integracion - Testing y Validacion de Software</description>
 
-  <dependencies>
-    <!-- Motor vintage: ejecuta pruebas JUnit 4 sobre la JUnit Platform (JUnit 5).
-         ES OBLIGATORIO mientras las pruebas usen @Before/org.junit.Assert.
-         Si se excluye, las pruebas dejan de ejecutarse EN SILENCIO (build verde, 0 tests). -->
-    <dependency>
-      <groupId>org.junit.vintage</groupId>
-      <artifactId>junit-vintage-engine</artifactId>
-      <version>5.10.2</version>
-      <scope>test</scope>
-    </dependency>
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <version>4.13.2</version>
-      <scope>test</scope>
-    </dependency>
+        <!-- El proyecto esta desarrollado para Java 17 -->
+        <maven.compiler.release>17</maven.compiler.release>
 
-    <!-- Mockito para crear dobles de prueba -->
-    <dependency>
-      <groupId>org.mockito</groupId>
-      <artifactId>mockito-core</artifactId>
-      <version>5.12.0</version>
-      <scope>test</scope>
-    </dependency>
+        <!-- Spring Boot -->
+        <spring-boot.version>2.7.18</spring-boot.version>
 
-    <!-- Web + JSON -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
+        <!-- Compatible con Docker Engine 29 -->
+        <testcontainers.version>1.21.4</testcontainers.version>
 
-    <!-- Trae JUnit 5, AssertJ, Hamcrest, Mockito y el soporte de test de Spring.
-         Desde Spring Boot 2.4 ya NO incluye junit-vintage-engine: por eso lo declaramos arriba. -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-test</artifactId>
-      <scope>test</scope>
-    </dependency>
+        <!-- Compatible con Java 26 -->
+        <jacoco.version>0.8.15</jacoco.version>
 
-    <!-- Validacion de @RequestBody con @Valid.
-         Desde Spring Boot 2.3 ya NO viene incluida en spring-boot-starter-web. -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-starter-validation</artifactId>
-    </dependency>
-
-    <!-- H2: base de datos en memoria.
-         scope runtime (no test): la aplicacion tambien la necesita al ejecutarse. -->
-    <dependency>
-      <groupId>com.h2database</groupId>
-      <artifactId>h2</artifactId>
-      <version>2.2.224</version>
-      <scope>runtime</scope>
-    </dependency>
-
-    <!-- Testcontainers: levanta un PostgreSQL REAL en Docker desde la propia
-         prueba y lo destruye al terminar. Es la respuesta al problema de H2:
-         H2 no se comporta como PostgreSQL en dialecto SQL, tipos ni
-         transacciones, asi que una prueba verde contra H2 no garantiza nada
-         sobre produccion. -->
-    <dependency>
-      <groupId>org.testcontainers</groupId>
-      <artifactId>postgresql</artifactId>
-      <version>${testcontainers.version}</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.testcontainers</groupId>
-      <artifactId>junit-jupiter</artifactId>
-      <version>${testcontainers.version}</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.postgresql</groupId>
-      <artifactId>postgresql</artifactId>
-      <scope>test</scope>
-    </dependency>
-
-    <!-- Pact: contract testing dirigido por el consumidor.
-         El consumidor declara que espera del proveedor y genera un "pacto";
-         el proveedor verifica en su propio pipeline que sigue cumpliendolo.
-         Nunca hace falta levantar los dos servicios a la vez. -->
-    <dependency>
-      <groupId>au.com.dius.pact.consumer</groupId>
-      <artifactId>junit5</artifactId>
-      <version>${pact.version}</version>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>au.com.dius.pact.provider</groupId>
-      <artifactId>junit5spring</artifactId>
-      <version>${pact.version}</version>
-      <scope>test</scope>
-    </dependency>
-
-  </dependencies>
-
-  <build>
-    <plugins>
-      <!-- Surefire ejecuta *Test.java (unitarias). Se fija la version explicitamente:
-           el default del ciclo de vida es 2.12.4, anterior a la JUnit Platform, que
-           ignoraria en silencio cualquier prueba JUnit 5. -->
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.5</version>
-      </plugin>
-      <!-- Failsafe ejecuta *IT.java (integracion y sistema) en la fase verify. -->
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-failsafe-plugin</artifactId>
-        <version>3.2.5</version>
-        <configuration>
-          <!-- IMPRESCINDIBLE al usar spring-boot-maven-plugin:repackage.
-               Failsafe corre despues de package, y para entonces el jar de
-               target/ ya es un "fat jar" de Spring Boot con las clases bajo
-               BOOT-INF/classes/. Sin esta linea Failsafe intenta cargarlas
-               desde ahi y falla con NoClassDefFoundError. -->
-          <classesDirectory>${project.build.outputDirectory}</classesDirectory>
-        </configuration>
-        <executions>
-          <execution>
-            <goals>
-              <goal>integration-test</goal>
-              <goal>verify</goal>
-            </goals>
-            <configuration>
-              <includes>
-                <include>**/*IT.java</include>
-              </includes>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <!-- Version explicita: este pom NO hereda de spring-boot-starter-parent, asi que
-           sin <version> Maven resolveria la ultima disponible (3.x, incompatible con Boot 2.7).
-           La ejecucion repackage es la que produce un jar ejecutable. -->
-      <plugin>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-maven-plugin</artifactId>
-        <version>${spring-boot.version}</version>
-        <executions>
-          <execution>
-            <goals>
-              <goal>repackage</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-      <!-- JaCoCo: cobertura COMBINADA de unitarias (Surefire) e integracion (Failsafe).
-           Hacen falta las cuatro ejecuciones: sin *-integration, lo que cubren los *IT
-           no cuenta y el 80% global exigido por la rubrica es inalcanzable. -->
-      <plugin>
-        <groupId>org.jacoco</groupId>
-        <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.12</version>
-        <executions>
-          <execution>
-            <id>prepare-agent</id>
-            <goals>
-              <goal>prepare-agent</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>report</id>
-            <phase>test</phase>
-            <goals>
-              <goal>report</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>prepare-agent-integration</id>
-            <goals>
-              <goal>prepare-agent-integration</goal>
-            </goals>
-          </execution>
-          <execution>
-            <id>report-integration</id>
-            <phase>verify</phase>
-            <goals>
-              <goal>report-integration</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
-        <configuration>
-          <release>17</release>
-        </configuration>
-      </plugin>
-    </plugins>
-  </build>
+        <!-- Pact -->
+        <pact.version>4.6.14</pact.version>
+    </properties>
 
 
-  <dependencyManagement>
+    <!-- ============================================================= -->
+    <!-- DEPENDENCIAS                                                   -->
+    <!-- ============================================================= -->
+
     <dependencies>
-      <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-dependencies</artifactId>
-        <version>${spring-boot.version}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
+
+        <!-- ========================================================= -->
+        <!-- JUNIT 4 SOBRE JUNIT PLATFORM                              -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- MOCKITO                                                     -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.12.0</version>
+            <scope>test</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- SPRING WEB                                                  -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- H2                                                          -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>runtime</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- TESTCONTAINERS + POSTGRESQL                                -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+
+        <!-- ========================================================= -->
+        <!-- PACT                                                        -->
+        <!-- ========================================================= -->
+
+        <dependency>
+            <groupId>au.com.dius.pact.consumer</groupId>
+            <artifactId>junit5</artifactId>
+            <version>${pact.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>au.com.dius.pact.provider</groupId>
+            <artifactId>junit5spring</artifactId>
+            <version>${pact.version}</version>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
-  </dependencyManagement>
+
+
+    <!-- ============================================================= -->
+    <!-- BUILD                                                         -->
+    <!-- ============================================================= -->
+
+    <build>
+
+        <plugins>
+
+            <!-- ===================================================== -->
+            <!-- SUREFIRE                                                -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- FAILSAFE                                                 -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.2.5</version>
+
+                <configuration>
+                    <classesDirectory>
+                        ${project.build.outputDirectory}
+                    </classesDirectory>
+                </configuration>
+
+                <executions>
+                    <execution>
+
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+
+                        <configuration>
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                        </configuration>
+
+                    </execution>
+                </executions>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- SPRING BOOT                                             -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- JACOCO                                                   -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+
+                <executions>
+
+                    <!-- ================================================= -->
+                    <!-- 1. Preparar agente para pruebas normales           -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+
+
+                    <!-- ================================================= -->
+                    <!-- 2. Preparar agente para pruebas de integración     -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>prepare-agent-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                    </execution>
+
+
+                    <!-- ================================================= -->
+                    <!-- 3. Combinar jacoco.exec y jacoco-it.exec           -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>merge-results</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>merge</goal>
+                        </goals>
+
+                        <configuration>
+
+                            <fileSets>
+                                <fileSet>
+                                    <directory>
+                                        ${project.build.directory}
+                                    </directory>
+
+                                    <includes>
+                                        <include>jacoco.exec</include>
+                                        <include>jacoco-it.exec</include>
+                                    </includes>
+                                </fileSet>
+                            </fileSets>
+
+                            <destFile>
+                                ${project.build.directory}/jacoco-merged.exec
+                            </destFile>
+
+                        </configuration>
+                    </execution>
+
+
+                    <!-- ================================================= -->
+                    <!-- 4. Generar reporte FINAL combinado                 -->
+                    <!-- ================================================= -->
+
+                    <execution>
+                        <id>report-combined</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+
+                        <configuration>
+
+                            <dataFile>
+                                ${project.build.directory}/jacoco-merged.exec
+                            </dataFile>
+
+                            <outputDirectory>
+                                ${project.build.directory}/site/jacoco
+                            </outputDirectory>
+
+                        </configuration>
+                    </execution>
+
+                </executions>
+            </plugin>
+
+
+            <!-- ===================================================== -->
+            <!-- COMPILADOR                                               -->
+            <!-- ===================================================== -->
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+
+                <configuration>
+                    <release>17</release>
+                </configuration>
+            </plugin>
+
+        </plugins>
+
+    </build>
+
+
+    <!-- ============================================================= -->
+    <!-- SPRING BOOT DEPENDENCY MANAGEMENT                             -->
+    <!-- ============================================================= -->
+
+    <dependencyManagement>
+
+        <dependencies>
+
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+        </dependencies>
+
+    </dependencyManagement>
+
 </project>
