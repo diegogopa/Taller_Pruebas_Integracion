@@ -1,0 +1,8 @@
+Taller de Pruebas de Integración y Sistema
+Testing y Validación de Software
+Maestría en Ingeniería de Software - Universidad de La Sabana
+
+Integrantes:
+
+Nombre: Diego Alejandro Gómez Papagayo
+Correo institucional: diegogopa@unisabana.edu.co
